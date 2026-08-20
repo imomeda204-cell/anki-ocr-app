@@ -148,7 +148,7 @@ if st.button("✨ まとめてAI解析開始", type="primary", disabled=not (upl
 
             contents = [prompt] + pil_images
             response = client.models.generate_content(
-                model='gemini-2.5-flash',
+                model='gemini-3.6-flash',
                 contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json"

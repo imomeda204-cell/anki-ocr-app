@@ -1,22 +1,25 @@
 import os
 import json
+import random
+import tempfile
 import pandas as pd
 from PIL import Image
 import streamlit as st
 from google import genai
 from google.genai import types
+import genanki
 
 # ----------------- ページ基本設定 -----------------
 st.set_page_config(page_title="Anki Note OCR", page_icon="📱", layout="centered")
 
 st.title("📱 ノートOCR ➔ Anki")
 
-# ----------------- 設定管理（ノートタイプ & よく使うデッキ一覧） -----------------
+# ----------------- 設定管理 -----------------
 CONFIG_FILE = "anki_config.json"
 
 DEFAULT_CONFIG = {
     "note_types": {
-        "HSK": [ "拼音", "生词", "意思", "例句", "例句翻译-日语"],
+        "HSK": ["拼音", "生词", "意思", "例句", "例句翻译-日语"],
         "IELTS": ["Word", "意味", "類義語", "例文", "Note"],
         "IELTS writing": ["Word", "意味", "例文", "Note"],
         "基本": ["表面", "裏面"]
@@ -51,7 +54,7 @@ config = load_config()
 # ----------------- サイドバー（設定UI） -----------------
 st.sidebar.header("⚙️ 設定")
 
-# 1. ノートタイプ（抽出フィールド）の選択
+# 1. ノートタイプ選択
 note_type_options = list(config["note_types"].keys()) + ["➕ 新規ノートタイプ作成..."]
 selected_note_type = st.sidebar.selectbox("📝 ノートタイプを選択", note_type_options)
 
@@ -89,7 +92,7 @@ st.sidebar.markdown(f"**抽出項目:** `{', '.join(fields)}`")
 
 st.sidebar.markdown("---")
 
-# 2. 登録先デッキの選択
+# 2. 登録先デッキ選択
 deck_options = config["decks"] + ["➕ 新しいデッキ名を手入力..."]
 selected_deck_choice = st.sidebar.selectbox("📂 登録先デッキを選択", deck_options)
 
@@ -162,27 +165,69 @@ if st.button("✨ まとめてAI解析開始", type="primary", disabled=not (upl
         except Exception as e:
             st.error(f"解析エラー: {e}")
 
-# ----------------- プレビュー・編集・Ankiエクスポート -----------------
+# ----------------- プレビュー・直接編集 & APKG生成 -----------------
 if "extracted_df" in st.session_state:
     st.subheader("📝 抽出結果プレビュー（表内で直接編集可能）")
     
     edited_df = st.data_editor(st.session_state["extracted_df"], num_rows="dynamic", use_container_width=True)
 
-    header_comment = f"#separator:tab\n#html:true\n#deck:{deck_name}\n#tags:ocr_import\n"
-    tsv_content = header_comment + edited_df.to_csv(sep="\t", index=False, header=False)
+    # genanki を使って .apkg パッケージをメモリ/一時ファイル上で生成
+    def generate_apkg(df, target_deck, field_names):
+        model_id = abs(hash(target_deck + "".join(field_names))) % (10**9)
+        deck_id = abs(hash(target_deck)) % (10**9)
+
+        # 表面と裏面のテンプレート構築
+        front_template = f"<h2>{{{{{field_names[0]}}}}}</h2>"
+        back_template = f"{{{{FrontSide}}}}<hr id=answer>"
+        for f in field_names[1:]:
+            back_template += f"<p><b>{f}:</b> {{{{{f}}}}}</p>"
+
+        anki_model = genanki.Model(
+            model_id,
+            f"{target_deck} Model",
+            fields=[{'name': f} for f in field_names],
+            templates=[
+                {
+                    'name': 'Card 1',
+                    'qfmt': front_template,
+                    'afmt': back_template,
+                },
+            ],
+            css=".card { font-family: -apple-system, sans-serif; font-size: 20px; text-align: center; color: black; background-color: white; }"
+        )
+
+        anki_deck = genanki.Deck(deck_id, target_deck)
+
+        for _, row in df.iterrows():
+            row_fields = [str(row.get(f, "") if pd.notna(row.get(f, "")) else "") for f in field_names]
+            note = genanki.Note(
+                model=anki_model,
+                fields=row_fields
+            )
+            anki_deck.add_note(note)
+
+        package = genanki.Package(anki_deck)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".apkg") as tmp:
+            package.write_to_file(tmp.name)
+            with open(tmp.name, "rb") as f:
+                data = f.read()
+        os.remove(tmp.name)
+        return data
+
+    apkg_bytes = generate_apkg(edited_df, deck_name, fields)
 
     st.download_button(
-        label=f"📥 『{deck_name}』用のAnkiファイルを保存 (.txt)",
-        data=tsv_content.encode("utf-8"),
-        file_name="anki_import.txt",
-        mime="text/plain",
+        label=f"📦 『{deck_name}』のAnkiパッケージ (.apkg) をダウンロード",
+        data=apkg_bytes,
+        file_name=f"{deck_name.replace('::', '_')}.apkg",
+        mime="application/octet-stream",
         type="primary"
     )
 
     st.markdown(f"""
     ---
     **📱 スマホでのAnki取り込み手順:**
-    1. 上の「ファイルを保存」ボタンをタップ
-    2. ダウンロードされた `anki_import.txt` をタップして共有メニューを開く
-    3. **「AnkiMobile」** を選択すると、**`{deck_name}`** へ自動で一括登録されます
+    1. 上の **「.apkg をダウンロード」** ボタンをタップ
+    2. Safariのダウンロード完了アイコン（または「ファイル」アプリのダウンロード項目）から、ダウンロードした **`.apkg` ファイルをタップ**
+    3. **AnkiMobile が自動起動**し、デッキ **`{deck_name}`** に即座にカードが取り込まれます！
     """)

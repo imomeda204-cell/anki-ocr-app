@@ -11,7 +11,7 @@ import genanki
 # ----------------- ページ基本設定 -----------------
 st.set_page_config(page_title="Anki Note OCR", page_icon="📱", layout="centered")
 
-st.title("📱Anki-transporter")
+st.markdown("###📱Anki-transporter")
 
 # ----------------- 設定管理 -----------------
 CONFIG_FILE = "anki_config.json"

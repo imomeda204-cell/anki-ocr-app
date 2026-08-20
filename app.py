@@ -10,8 +10,8 @@ import genanki
 
 # ----------------- ページ基本設定 -----------------
 st.set_page_config(page_title="Anki Note OCR", page_icon="📱", layout="centered")
-
-st.markdown("###📱Anki-transporter")
+# ちょうど良い見出しサイズ（中サイズ・太字）
+st.markdown("<h2 style='font-size: 24px; margin-top: 0px;'>📱 Anki-transporter</h2>", unsafe_allow_html=True)
 
 # ----------------- 設定管理 -----------------
 CONFIG_FILE = "anki_config.json"

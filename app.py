@@ -1,6 +1,5 @@
 import os
 import json
-import random
 import tempfile
 import pandas as pd
 from PIL import Image
@@ -12,7 +11,7 @@ import genanki
 # ----------------- ページ基本設定 -----------------
 st.set_page_config(page_title="Anki Note OCR", page_icon="📱", layout="centered")
 
-st.title("📱 ノートOCR ➔ Anki")
+st.title("📱Anki-transporter")
 
 # ----------------- 設定管理 -----------------
 CONFIG_FILE = "anki_config.json"
@@ -112,30 +111,39 @@ api_key = st.secrets.get("GEMINI_API_KEY", "")
 if not api_key:
     api_key = st.sidebar.text_input("Gemini API Key", type="password")
 
-# ----------------- メイン画面（画像アップロード & 解析） -----------------
+# ----------------- メイン画面（画像 & PDF アップロード & 解析） -----------------
 uploaded_files = st.file_uploader(
-    "📸 写真やスクショを選択（複数枚可）", 
-    type=["png", "jpg", "jpeg", "webp"], 
+    "📸 写真/スクショまたは 📄 PDFを選択（複数可）", 
+    type=["png", "jpg", "jpeg", "webp", "pdf"], 
     accept_multiple_files=True
 )
 
 if uploaded_files:
-    st.info(f"合計 {len(uploaded_files)} 枚の画像が選択されています。")
+    st.info(f"合計 {len(uploaded_files)} 件のファイルが選択されています。")
 
 if st.button("✨ まとめてAI解析開始", type="primary", disabled=not (uploaded_files and api_key and fields)):
-    with st.spinner("AIが画像から単語を抽出中..."):
+    with st.spinner("AIがファイル（画像・PDF）から学習項目を抽出中..."):
         try:
             client = genai.Client(api_key=api_key)
-            pil_images = []
+            media_parts = []
+            
             for file in uploaded_files:
-                img = Image.open(file)
-                img.thumbnail((2048, 2048))
-                pil_images.append(img)
+                file_bytes = file.read()
+                # PDFと画像で処理を分岐
+                if file.name.lower().endswith(".pdf"):
+                    media_parts.append(
+                        types.Part.from_bytes(data=file_bytes, mime_type="application/pdf")
+                    )
+                else:
+                    file.seek(0)
+                    img = Image.open(file)
+                    img.thumbnail((2048, 2048))
+                    media_parts.append(img)
 
             fields_str = ", ".join([f'"{f}"' for f in fields])
             prompt = f"""
-            あなたは語学学習ノート・スクショからデータを読み取る専門AIです。
-            添付されたすべての画像（手書きノート、電子書籍、アプリのスクショ等）から学習項目を抽出し、
+            あなたは語学学習ノート・論文・教材PDF・スクショから重要単語や表現を読み取る専門AIです。
+            添付されたすべてのファイル（手書きノート、PDF資料、電子書籍、アプリのスクショ等）から学習項目を抽出し、
             指定されたAnkiカードのフィールド名にマッピングして単一のJSON配列でまとめて出力してください。
 
             【対象フィールド名一覧】
@@ -143,13 +151,13 @@ if st.button("✨ まとめてAI解析開始", type="primary", disabled=not (upl
 
             【ルール】
             1. 各データ項目は、必ず上記のフィールド名（[{fields_str}]）をキーとするJSONオブジェクトにしてください。
-            2. 画像内の言語（英語、中国語等）を自動判別し、適切な内容を格納してください。
+            2. 言語（英語、中国語等）を自動判別し、適切な内容を格納してください。
                - 中国語の場合、漢字は簡字体、ピンインは声調記号付きにしてください。
-            3. ノート上で省略されている項目がある場合、学習に適した自然な内容をAIで補完してください。
+            3. 項目に抜けがある場合（例：例文や意味など）、学習に適した自然な内容をAIで補完してください。
             4. 出力はMarkdownバッククォートなしの純粋なJSON配列のみにしてください。
             """
 
-            contents = [prompt] + pil_images
+            contents = [prompt] + media_parts
             response = client.models.generate_content(
                 model='gemini-3.6-flash',
                 contents=contents,
@@ -165,18 +173,16 @@ if st.button("✨ まとめてAI解析開始", type="primary", disabled=not (upl
         except Exception as e:
             st.error(f"解析エラー: {e}")
 
-# ----------------- プレビュー・直接編集 & APKG生成 -----------------
+# ----------------- プレビュー・APKG生成 -----------------
 if "extracted_df" in st.session_state:
-    st.subheader("📝 抽出結果プレビュー（表内で直接編集可能）")
+    st.subheader("📝 抽出結果プレビュー（直接編集可能）")
     
     edited_df = st.data_editor(st.session_state["extracted_df"], num_rows="dynamic", use_container_width=True)
 
-    # genanki を使って .apkg パッケージをメモリ/一時ファイル上で生成
     def generate_apkg(df, target_deck, field_names):
         model_id = abs(hash(target_deck + "".join(field_names))) % (10**9)
         deck_id = abs(hash(target_deck)) % (10**9)
 
-        # 表面と裏面のテンプレート構築
         front_template = f"<h2>{{{{{field_names[0]}}}}}</h2>"
         back_template = f"{{{{FrontSide}}}}<hr id=answer>"
         for f in field_names[1:]:
@@ -223,11 +229,3 @@ if "extracted_df" in st.session_state:
         mime="application/octet-stream",
         type="primary"
     )
-
-    st.markdown(f"""
-    ---
-    **📱 スマホでのAnki取り込み手順:**
-    1. 上の **「.apkg をダウンロード」** ボタンをタップ
-    2. Safariのダウンロード完了アイコン（または「ファイル」アプリのダウンロード項目）から、ダウンロードした **`.apkg` ファイルをタップ**
-    3. **AnkiMobile が自動起動**し、デッキ **`{deck_name}`** に即座にカードが取り込まれます！
-    """)
